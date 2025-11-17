@@ -118,6 +118,8 @@ var transformFuncs = map[string]bool{
 	"union":           true,
 	"vector":          true,
 	"year":            true,
+
+	"histogram_quantile_or_zero": true,
 }
 
 // IsTransformFunc returns whether funcName is known transform function.
