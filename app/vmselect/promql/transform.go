@@ -135,7 +135,7 @@ var transformFuncs = map[string]transformFunc{
 	"vector":          transformVector,
 	"year":            newTransformFuncDateTime(transformYear),
 
-	"histogram_quantile_or_zero ": transformHistogramQuantileOrZero,
+	"histogram_quantile_or_zero": transformHistogramQuantileOrZero,
 }
 
 // These functions don't change physical meaning of input time series,
