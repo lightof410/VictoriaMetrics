@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 1m0s
+  scrape_timeout: 30s
+scrape_configs:
+  - job_name: mitelemetry_otel_metrics_staging
+    scrape_interval: 2m0s
+    scrape_timeout: 1m0s
+    metrics_path: /otelmetrics
+    honor_timestamps: true
+    scheme: http
+    follow_redirects: false
+    relabel_configs:
+      - action: replace
+        separator: ;
+        target_label: _team_id_
+        regex: (.*)
+        replacement: "8419"
+      - action: keep
+        source_labels: ['devx_app_name']
+        regex: "mitelemetry-gateway"
+    http_sd_configs:
+      - url: http://staging-mioap.api.xiaomi.net/sd_config?type=otelmetrics

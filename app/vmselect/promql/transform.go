@@ -134,6 +134,8 @@ var transformFuncs = map[string]transformFunc{
 	"union":           transformUnion,
 	"vector":          transformVector,
 	"year":            newTransformFuncDateTime(transformYear),
+
+	"histogram_quantile_or_zero ": transformHistogramQuantileOrZero,
 }
 
 // These functions don't change physical meaning of input time series,
@@ -2944,4 +2946,123 @@ func removeCounterResetsMaybeNaNs(values []float64) {
 		prevValue = v
 		values[i] = v + correction
 	}
+}
+
+func transformHistogramQuantileOrZero(tfa *transformFuncArg) ([]*timeseries, error) {
+	args := tfa.args
+	if len(args) < 2 || len(args) > 3 {
+		return nil, fmt.Errorf("unexpected number of args; got %d; want 2...3", len(args))
+	}
+	phis, err := getScalar(args[0], 0)
+	if err != nil {
+		return nil, fmt.Errorf("cannot parse phi: %w", err)
+	}
+
+	// Convert buckets with `vmrange` labels to buckets with `le` labels.
+	tss := vmrangeBucketsToLE(args[1])
+
+	// Parse boundsLabel. See https://github.com/prometheus/prometheus/issues/5706 for details.
+	var boundsLabel string
+	if len(args) > 2 {
+		s, err := getString(args[2], 2)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse boundsLabel (arg #3): %w", err)
+		}
+		boundsLabel = s
+	}
+
+	// Group metrics by all tags excluding "le"
+	m := groupLeTimeseries(tss)
+
+	// Calculate quantile for each group in m
+	lastNonInf := func(_ int, xss []leTimeseries) float64 {
+		for len(xss) > 0 {
+			xsLast := xss[len(xss)-1]
+			if !math.IsInf(xsLast.le, 0) {
+				return xsLast.le
+			}
+			xss = xss[:len(xss)-1]
+		}
+		return nan
+	}
+	quantile := func(i int, phis []float64, xss []leTimeseries) (q, lower, upper float64) {
+		phi := phis[i]
+		if math.IsNaN(phi) {
+			return nan, nan, nan
+		}
+		fixBrokenBuckets(i, xss)
+		vLast := float64(0)
+		if len(xss) > 0 {
+			vLast = xss[len(xss)-1].ts.Values[i]
+		}
+		if vLast == 0 {
+			return 0, 0, 0
+		}
+		if phi < 0 {
+			return -inf, -inf, xss[0].ts.Values[i]
+		}
+		if phi > 1 {
+			return inf, vLast, inf
+		}
+		vReq := vLast * phi
+		vPrev := float64(0)
+		lePrev := float64(0)
+		for _, xs := range xss {
+			v := xs.ts.Values[i]
+			le := xs.le
+			if v <= 0 {
+				// Skip zero buckets.
+				lePrev = le
+				continue
+			}
+			if v < vReq {
+				vPrev = v
+				lePrev = le
+				continue
+			}
+			if math.IsInf(le, 0) {
+				break
+			}
+			if v == vPrev {
+				return lePrev, lePrev, v
+			}
+			vv := lePrev + (le-lePrev)*(vReq-vPrev)/(v-vPrev)
+			return vv, lePrev, le
+		}
+		vv := lastNonInf(i, xss)
+		return vv, vv, inf
+	}
+	rvs := make([]*timeseries, 0, len(m))
+	for _, xss := range m {
+		sort.Slice(xss, func(i, j int) bool {
+			return xss[i].le < xss[j].le
+		})
+		xss = mergeSameLE(xss)
+		dst := xss[0].ts
+		var tsLower, tsUpper *timeseries
+		if len(boundsLabel) > 0 {
+			tsLower = &timeseries{}
+			tsLower.CopyFromShallowTimestamps(dst)
+			tsLower.MetricName.RemoveTag(boundsLabel)
+			tsLower.MetricName.AddTag(boundsLabel, "lower")
+			tsUpper = &timeseries{}
+			tsUpper.CopyFromShallowTimestamps(dst)
+			tsUpper.MetricName.RemoveTag(boundsLabel)
+			tsUpper.MetricName.AddTag(boundsLabel, "upper")
+		}
+		for i := range dst.Values {
+			v, lower, upper := quantile(i, phis, xss)
+			dst.Values[i] = v
+			if len(boundsLabel) > 0 {
+				tsLower.Values[i] = lower
+				tsUpper.Values[i] = upper
+			}
+		}
+		rvs = append(rvs, dst)
+		if len(boundsLabel) > 0 {
+			rvs = append(rvs, tsLower)
+			rvs = append(rvs, tsUpper)
+		}
+	}
+	return rvs, nil
 }
