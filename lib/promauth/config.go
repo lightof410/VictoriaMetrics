@@ -643,6 +643,8 @@ type Options struct {
 
 	// Headers contains optional http request headers in the form 'Foo: bar'.
 	Headers []string
+
+	Exec *ExecConfig
 }
 
 // NewConfig creates auth config from the given opts.
@@ -652,6 +654,11 @@ func (opts *Options) NewConfig() (*Config, error) {
 		baseDir = "."
 	}
 	var actx authContext
+	if opts.Exec != nil {
+		if err := actx.initFromExecConfig(opts.Exec); err != nil {
+			return nil, err
+		}
+	}
 	if opts.Authorization != nil {
 		if err := actx.initFromAuthorization(baseDir, opts.Authorization); err != nil {
 			return nil, err
@@ -933,5 +940,17 @@ func (tctx *tlsContext) initFromTLSConfig(baseDir string, tc *TLSConfig) error {
 		return fmt.Errorf("cannot parse `min_version`: %w", err)
 	}
 	tctx.minVersion = v
+	return nil
+}
+
+func (actx *authContext) initFromExecConfig(exec *ExecConfig) error {
+	if exec == nil {
+		return fmt.Errorf("exec config is nil")
+	}
+	if err := exec.InitAuthenticator(); err != nil {
+		return err
+	}
+	actx.getAuthHeader = exec.getAuthHeaderFunc
+	actx.authHeaderDigest = exec.String()
 	return nil
 }

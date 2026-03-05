@@ -72,9 +72,6 @@ type AuthInfo struct {
 }
 
 func (au *AuthInfo) validate() error {
-	if au.Exec != nil {
-		return unsupportedFieldError("exec")
-	}
 	if len(au.ImpersonateUID) > 0 {
 		return unsupportedFieldError("act-as-uid")
 	}
@@ -101,29 +98,29 @@ func unsupportedFieldError(fieldName string) error {
 // ExecConfig contains information about os.command, that returns auth token for kubernetes cluster connection
 type ExecConfig struct {
 	// Command to execute.
-	Command string `json:"command"`
+	Command string `yaml:"command"`
 	// Arguments to pass to the command when executing it.
-	Args []string `json:"args"`
+	Args []string `yaml:"args"`
 	// Env defines additional environment variables to expose to the process. These
 	// are unioned with the host's environment, as well as variables client-go uses
 	// to pass argument to the plugin.
-	Env []ExecEnvVar `json:"env"`
+	Env []ExecEnvVar `yaml:"env"`
 
 	// Preferred input version of the ExecInfo. The returned ExecCredentials MUST use
 	// the same encoding version as the input.
-	APIVersion string `json:"apiVersion,omitempty"`
+	APIVersion string `yaml:"apiVersion,omitempty"`
 
 	// This text is shown to the user when the executable doesn't seem to be
 	// present. For example, `brew install foo-cli` might be a good InstallHint for
 	// foo-cli on Mac OS systems.
-	InstallHint string `json:"installHint,omitempty"`
+	InstallHint string `yaml:"installHint,omitempty"`
 
 	// ProvideClusterInfo determines whether or not to provide cluster information,
 	// which could potentially contain very large CA data, to this exec plugin as a
 	// part of the KUBERNETES_EXEC_INFO environment variable. By default, it is set
 	// to false. Package k8s.io/client-go/tools/auth/exec provides helper methods for
 	// reading this environment variable.
-	ProvideClusterInfo bool `json:"provideClusterInfo"`
+	ProvideClusterInfo bool `yaml:"provideClusterInfo"`
 
 	// InteractiveMode determines this plugin's relationship with standard input. Valid
 	// values are "Never" (this exec plugin never uses standard input), "IfAvailable" (this
@@ -135,14 +132,14 @@ type ExecConfig struct {
 	// client.authentication.k8s.io/v1beta1, then this field is optional and defaults
 	// to "IfAvailable" when unset. Otherwise, this field is required.
 	//+optional
-	InteractiveMode string `json:"interactiveMode,omitempty"`
+	InteractiveMode string `yaml:"interactiveMode,omitempty"`
 }
 
 // ExecEnvVar is used for setting environment variables when executing an exec-based
 // credential plugin.
 type ExecEnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
 }
 
 // Context is a tuple of references to a cluster and AuthInfo
@@ -158,6 +155,7 @@ type kubeConfig struct {
 	tokenFile string
 	tlsConfig *promauth.TLSConfig
 	proxyURL  *proxy.URL
+	exec      *promauth.ExecConfig
 }
 
 func newKubeConfig(kubeConfigFile string) (*kubeConfig, error) {
@@ -214,9 +212,28 @@ func (cfg *Config) buildKubeConfig() (*kubeConfig, error) {
 	var tlsConfig *promauth.TLSConfig
 	var basicAuth *promauth.BasicAuthConfig
 	var token, tokenFile string
+	var ec *promauth.ExecConfig
 	if configAuthInfo != nil {
 		if err := configAuthInfo.validate(); err != nil {
 			return nil, fmt.Errorf("invalid auth config %q: %w", authInfoName, err)
+		}
+		if configAuthInfo.Exec != nil {
+			ec = &promauth.ExecConfig{
+				Command:         configAuthInfo.Exec.Command,
+				Args:            configAuthInfo.Exec.Args,
+				InstallHint:     configAuthInfo.Exec.InstallHint,
+				InteractiveMode: configAuthInfo.Exec.InteractiveMode,
+				APIVersion:      configAuthInfo.Exec.APIVersion,
+			}
+			if len(configAuthInfo.Exec.Env) > 0 {
+				ec.Env = make([]promauth.ExecEnvVar, 0)
+				for _, envVar := range configAuthInfo.Exec.Env {
+					ec.Env = append(ec.Env, promauth.ExecEnvVar{
+						Name:  envVar.Name,
+						Value: envVar.Value,
+					})
+				}
+			}
 		}
 		if strings.HasPrefix(configClusterInfo.Server, "https://") {
 			tlsConfig = &promauth.TLSConfig{
@@ -265,6 +282,7 @@ func (cfg *Config) buildKubeConfig() (*kubeConfig, error) {
 		tokenFile: tokenFile,
 		tlsConfig: tlsConfig,
 		proxyURL:  configClusterInfo.ProxyURL,
+		exec:      ec,
 	}
 	return kc, nil
 }

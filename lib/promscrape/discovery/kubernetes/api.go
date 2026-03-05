@@ -39,6 +39,7 @@ func newAPIConfig(sdc *SDConfig, baseDir string, swcFunc ScrapeWorkConstructorFu
 			OAuth2:          cc.OAuth2,
 			TLSConfig:       kc.tlsConfig,
 			Headers:         cc.Headers,
+			Exec:            kc.exec,
 		}
 		acNew, err := opts.NewConfig()
 		if err != nil {
