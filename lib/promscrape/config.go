@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promscrape/discovery/zookeeper"
 	"github.com/VictoriaMetrics/metrics"
 	"github.com/cespare/xxhash/v2"
 	"gopkg.in/yaml.v2"
@@ -301,29 +302,30 @@ type ScrapeConfig struct {
 	// That's why it needs to be supported too :(
 	EnableCompression *bool `yaml:"enable_compression,omitempty"`
 
-	AzureSDConfigs        []azure.SDConfig        `yaml:"azure_sd_configs,omitempty"`
-	ConsulSDConfigs       []consul.SDConfig       `yaml:"consul_sd_configs,omitempty"`
-	ConsulAgentSDConfigs  []consulagent.SDConfig  `yaml:"consulagent_sd_configs,omitempty"`
-	DigitaloceanSDConfigs []digitalocean.SDConfig `yaml:"digitalocean_sd_configs,omitempty"`
-	DNSSDConfigs          []dns.SDConfig          `yaml:"dns_sd_configs,omitempty"`
-	DockerSDConfigs       []docker.SDConfig       `yaml:"docker_sd_configs,omitempty"`
-	DockerSwarmSDConfigs  []dockerswarm.SDConfig  `yaml:"dockerswarm_sd_configs,omitempty"`
-	EC2SDConfigs          []ec2.SDConfig          `yaml:"ec2_sd_configs,omitempty"`
-	EurekaSDConfigs       []eureka.SDConfig       `yaml:"eureka_sd_configs,omitempty"`
-	FileSDConfigs         []FileSDConfig          `yaml:"file_sd_configs,omitempty"`
-	GCESDConfigs          []gce.SDConfig          `yaml:"gce_sd_configs,omitempty"`
-	HetznerSDConfigs      []hetzner.SDConfig      `yaml:"hetzner_sd_configs,omitempty"`
-	HTTPSDConfigs         []http.SDConfig         `yaml:"http_sd_configs,omitempty"`
-	KubernetesSDConfigs   []kubernetes.SDConfig   `yaml:"kubernetes_sd_configs,omitempty"`
-	KumaSDConfigs         []kuma.SDConfig         `yaml:"kuma_sd_configs,omitempty"`
-	MarathonSDConfigs     []marathon.SDConfig     `yaml:"marathon_sd_configs,omitempty"`
-	NomadSDConfigs        []nomad.SDConfig        `yaml:"nomad_sd_configs,omitempty"`
-	OpenStackSDConfigs    []openstack.SDConfig    `yaml:"openstack_sd_configs,omitempty"`
-	OVHCloudSDConfigs     []ovhcloud.SDConfig     `yaml:"ovhcloud_sd_configs,omitempty"`
-	PuppetDBSDConfigs     []puppetdb.SDConfig     `yaml:"puppetdb_sd_configs,omitempty"`
-	StaticConfigs         []StaticConfig          `yaml:"static_configs,omitempty"`
-	VultrSDConfigs        []vultr.SDConfig        `yaml:"vultr_configs,omitempty"`
-	YandexCloudSDConfigs  []yandexcloud.SDConfig  `yaml:"yandexcloud_sd_configs,omitempty"`
+	AzureSDConfigs        []azure.SDConfig              `yaml:"azure_sd_configs,omitempty"`
+	ConsulSDConfigs       []consul.SDConfig             `yaml:"consul_sd_configs,omitempty"`
+	ConsulAgentSDConfigs  []consulagent.SDConfig        `yaml:"consulagent_sd_configs,omitempty"`
+	DigitaloceanSDConfigs []digitalocean.SDConfig       `yaml:"digitalocean_sd_configs,omitempty"`
+	DNSSDConfigs          []dns.SDConfig                `yaml:"dns_sd_configs,omitempty"`
+	DockerSDConfigs       []docker.SDConfig             `yaml:"docker_sd_configs,omitempty"`
+	DockerSwarmSDConfigs  []dockerswarm.SDConfig        `yaml:"dockerswarm_sd_configs,omitempty"`
+	EC2SDConfigs          []ec2.SDConfig                `yaml:"ec2_sd_configs,omitempty"`
+	EurekaSDConfigs       []eureka.SDConfig             `yaml:"eureka_sd_configs,omitempty"`
+	FileSDConfigs         []FileSDConfig                `yaml:"file_sd_configs,omitempty"`
+	GCESDConfigs          []gce.SDConfig                `yaml:"gce_sd_configs,omitempty"`
+	HetznerSDConfigs      []hetzner.SDConfig            `yaml:"hetzner_sd_configs,omitempty"`
+	HTTPSDConfigs         []http.SDConfig               `yaml:"http_sd_configs,omitempty"`
+	KubernetesSDConfigs   []kubernetes.SDConfig         `yaml:"kubernetes_sd_configs,omitempty"`
+	KumaSDConfigs         []kuma.SDConfig               `yaml:"kuma_sd_configs,omitempty"`
+	MarathonSDConfigs     []marathon.SDConfig           `yaml:"marathon_sd_configs,omitempty"`
+	NomadSDConfigs        []nomad.SDConfig              `yaml:"nomad_sd_configs,omitempty"`
+	OpenStackSDConfigs    []openstack.SDConfig          `yaml:"openstack_sd_configs,omitempty"`
+	OVHCloudSDConfigs     []ovhcloud.SDConfig           `yaml:"ovhcloud_sd_configs,omitempty"`
+	PuppetDBSDConfigs     []puppetdb.SDConfig           `yaml:"puppetdb_sd_configs,omitempty"`
+	StaticConfigs         []StaticConfig                `yaml:"static_configs,omitempty"`
+	VultrSDConfigs        []vultr.SDConfig              `yaml:"vultr_configs,omitempty"`
+	YandexCloudSDConfigs  []yandexcloud.SDConfig        `yaml:"yandexcloud_sd_configs,omitempty"`
+	ServerSetSDConfigs    []zookeeper.ServersetSDConfig `yaml:"serverset_sd_configs,omitempty"`
 
 	// These options are supported only by lib/promscrape.
 	DisableCompression  bool                       `yaml:"disable_compression,omitempty"`
@@ -414,6 +416,9 @@ func (sc *ScrapeConfig) mustStop() {
 	}
 	for i := range sc.YandexCloudSDConfigs {
 		sc.YandexCloudSDConfigs[i].MustStop()
+	}
+	for i := range sc.ServerSetSDConfigs {
+		sc.ServerSetSDConfigs[i].MustStop()
 	}
 }
 
@@ -813,6 +818,15 @@ func (cfg *Config) getYandexCloudSDScrapeWork(prev []*ScrapeWork) []*ScrapeWork 
 		}
 	}
 	return cfg.getScrapeWorkGeneric(visitConfigs, "yandexcloud_sd_config", prev)
+}
+
+func (cfg *Config) getServerSetSDScrapeWork(prev []*ScrapeWork) []*ScrapeWork {
+	visitConfigs := func(sc *ScrapeConfig, visitor func(sdc targetLabelsGetter)) {
+		for i := range sc.ServerSetSDConfigs {
+			visitor(&sc.ServerSetSDConfigs[i])
+		}
+	}
+	return cfg.getScrapeWorkGeneric(visitConfigs, "serverset_sd_config", prev)
 }
 
 type targetLabelsGetter interface {
