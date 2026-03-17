@@ -65,7 +65,11 @@ func getAPIConfigForServerset(sdc *ServersetSDConfig) (*apiConfig, error) {
 }
 
 func newAPIConfigForServerset(sdc *ServersetSDConfig) (*apiConfig, error) {
-	zkWatcher, err := newZookeeperWatcher(sdc.Servers, sdc.Timeout, sdc.Paths, parseServersetMember)
+	timeout := sdc.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	zkWatcher, err := newZookeeperWatcher(sdc.Servers, timeout, sdc.Paths, parseServersetMember)
 	if err != nil {
 		return nil, err
 	}
