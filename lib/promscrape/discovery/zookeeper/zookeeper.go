@@ -10,9 +10,8 @@ import (
 )
 
 // SDCheckInterval defines interval for targets refresh.
-var SDCheckInterval = flag.Duration("promscrape.kubernetesSDCheckInterval", 30*time.Second, "Interval for checking for changes in Kubernetes API server. "+
-	"This works only if kubernetes_sd_configs is configured in '-promscrape.config' file. "+
-	"See https://docs.victoriametrics.com/victoriametrics/sd_configs/#kubernetes_sd_configs for details")
+var SDCheckInterval = flag.Duration("promscrape.zookeeperSDCheckInterval", 30*time.Second, "Interval for checking for changes in zookeeper "+
+	"This works only if serverset_sd_configs is configured in '-promscrape.config' file. ")
 
 // ServersetSDConfig is the configuration for Twitter serversets in Zookeeper based discovery.
 type ServersetSDConfig struct {
