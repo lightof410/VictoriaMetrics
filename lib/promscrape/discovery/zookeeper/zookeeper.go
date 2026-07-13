@@ -26,11 +26,12 @@ func (sdc *ServersetSDConfig) GetLabels(baseDir string) ([]*promutil.Labels, err
 		return nil, fmt.Errorf("cannot get API config: %w", err)
 	}
 
-	ms := cfg.zkWatcher.sources
-	ret := make([]*promutil.Labels, 0, len(ms))
-	for _, v := range ms {
+	cfg.zkWatcher.mu.RLock()
+	ret := make([]*promutil.Labels, 0, len(cfg.zkWatcher.sources))
+	for _, v := range cfg.zkWatcher.sources {
 		ret = append(ret, v)
 	}
+	cfg.zkWatcher.mu.RUnlock()
 	return ret, nil
 }
 

@@ -2,6 +2,7 @@ package zookeeper
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutil"
@@ -11,6 +12,7 @@ import (
 type zookeeperWatcher struct {
 	conn *zk.Conn
 
+	mu      sync.RWMutex
 	sources map[string]*promutil.Labels
 
 	updates     chan ZookeeperTreeCacheEvent
@@ -98,6 +100,7 @@ func (z *zookeeperWatcher) watchForNodeUpdate() {
 		case <-z.ctx.Done():
 			return
 		case event := <-z.updates:
+			z.mu.Lock()
 			if event.Data != nil {
 				labelSet, err := z.parse(*event.Data, event.Path)
 				if err == nil {
@@ -108,6 +111,7 @@ func (z *zookeeperWatcher) watchForNodeUpdate() {
 			} else {
 				delete(z.sources, event.Path)
 			}
+			z.mu.Unlock()
 		}
 	}
 }
