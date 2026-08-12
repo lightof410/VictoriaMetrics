@@ -1,6 +1,8 @@
 ARG base_image=non-existing
 FROM $base_image
 
+RUN apk update && apk --update --no-cache add rsync
+
 EXPOSE 8482
 EXPOSE 8400
 EXPOSE 8401
