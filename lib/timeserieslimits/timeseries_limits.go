@@ -12,6 +12,13 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/prometheus"
 )
 
+// maxLabelLenLimit is the maximum allowed value for -maxLabelNameLen and -maxLabelValueLen command-line flags.
+//
+// It is set to 16MB in order to allow configuring long label values (e.g. 1638400 bytes)
+// without failing at startup. The effective runtime limits are clamped to math.MaxUint16
+// in Init(), since the wire format (MetricNameRaw) encodes label lengths with uint16.
+const maxLabelLenLimit = 16 * 1024 * 1024
+
 var (
 	enabled bool
 	// The maximum length of label name.
@@ -33,8 +40,8 @@ var (
 // MustInit checks if limits are with-in supported range and prepares package for usage
 func MustInit(inputMaxLabelsPerTimeseries, inputMaxLabelNameLen, inputMaxLabelValueLen int) {
 	mustBeInRange := func(name string, limit int) {
-		if limit <= 0 || limit > math.MaxUint16 {
-			logger.Fatalf("incorrect limit: %q value: %d, must be in range 1..%d", name, limit, math.MaxUint16)
+		if limit <= 0 || limit > maxLabelLenLimit {
+			logger.Fatalf("incorrect limit: %q value: %d, must be in range 1..%d", name, limit, maxLabelLenLimit)
 		}
 	}
 	mustBeInRange("maxLabelNameLen", inputMaxLabelNameLen)
@@ -44,6 +51,16 @@ func MustInit(inputMaxLabelsPerTimeseries, inputMaxLabelNameLen, inputMaxLabelVa
 
 // Init prepares package for usage
 func Init(inputMaxLabelsPerTimeseries, inputMaxLabelNameLen, inputMaxLabelValueLen int) {
+	// Clamp the effective limits to math.MaxUint16, since the wire format (MetricNameRaw)
+	// encodes label name/value lengths with uint16. Configured values above 64KiB (e.g.
+	// -maxLabelValueLen=1638400) are accepted at startup but are clamped here, so samples
+	// with longer label values are still ignored as before.
+	if inputMaxLabelNameLen > math.MaxUint16 {
+		inputMaxLabelNameLen = math.MaxUint16
+	}
+	if inputMaxLabelValueLen > math.MaxUint16 {
+		inputMaxLabelValueLen = math.MaxUint16
+	}
 	maxLabelsPerTimeseries = inputMaxLabelsPerTimeseries
 	maxLabelNameLen = inputMaxLabelNameLen
 	maxLabelValueLen = inputMaxLabelValueLen

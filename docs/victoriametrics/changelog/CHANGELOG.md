@@ -26,6 +26,10 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## tip
 
+## [v1.149.2]
+
+* FEATURE: `vminsert` and `vmstorage`: allow configuring `-maxLabelValueLen` and `-maxLabelNameLen` with values larger than `64KiB` (e.g. `1638400`) without failing at startup. Previously the accepted range was `1..65535`; now values in range `1..16777216` are accepted. The effective runtime limits are clamped to `65535` bytes, since the `MetricNameRaw` wire format encodes label name/value lengths with `uint16`. Samples with label names/values longer than `64KiB` continue to be ignored, so the runtime behavior is unchanged and no special upgrade procedure is required.
+
 ## [v1.149.0](https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.149.0)
 
 Release candidate
