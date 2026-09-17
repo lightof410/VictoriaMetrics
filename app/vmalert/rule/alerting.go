@@ -512,6 +512,13 @@ func (ar *AlertingRule) exec(ctx context.Context, ts time.Time, limit int) ([]pr
 	updated := make(map[uint64]struct{})
 	// update list of active alerts
 	for i, m := range res.Data {
+		// skip time series with non-finite values (NaN or Inf), since they cannot
+		// produce meaningful alerts. Such series are treated as absent, so a previously
+		// active alert gets resolved during the cleanup loop below.
+		if v := m.Values[0]; math.IsNaN(v) || math.IsInf(v, 0) {
+			ar.logDebugf(ts, nil, "skipped: alert value %v is not finite", v)
+			continue
+		}
 		labels, annotations := expandedLabels[i], expandedAnnotations[i]
 		alertID := hash(labels.processed)
 		if _, ok := updated[alertID]; ok {

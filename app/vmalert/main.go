@@ -94,6 +94,7 @@ func main() {
 	notifier.InitSecretFlags()
 	buildinfo.Init()
 	logger.Init()
+	mustInitClusterMemberID()
 
 	var err error
 	extURL, err = getExternalURL(*externalURL)

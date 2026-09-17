@@ -73,6 +73,10 @@ func replay(groupsCfg []config.Group, qb datasource.QuerierBuilder, rw remotewri
 		tFrom, tTo, *replayMaxDatapoints)
 
 	for _, cfg := range groupsCfg {
+		cfg.Rules = filterRulesByClusterMember(cfg.Rules, *clusterMembersCount, clusterMemberID)
+		if len(cfg.Rules) == 0 {
+			continue
+		}
 		ng := rule.NewGroup(cfg, qb, *evaluationInterval, labels)
 		totalRows += ng.Replay(tFrom, tTo, rw, *replayMaxDatapoints, *replayRuleRetryAttempts, *replayRulesDelay, *disableProgressBar, *ruleEvaluationConcurrency, *continueWithExecutionErr)
 	}

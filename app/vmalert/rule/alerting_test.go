@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strconv"
@@ -1489,5 +1490,36 @@ func TestAlertingRule_QueryTemplateInLabels(t *testing.T) {
 	// The query template should have been executed (even if it returns false due to mock data)
 	if suppressLabel != "true" && suppressLabel != "false" {
 		t.Fatalf("expected 'suppress_for_mass_alert' label to be 'true' or 'false', got '%s'", suppressLabel)
+	}
+}
+
+func TestAlertingRule_ExecNonFiniteValues(t *testing.T) {
+	ts, _ := time.Parse(time.RFC3339, "2024-10-29T00:00:00Z")
+
+	rule := newTestAlertingRule("non_finite", 0)
+	fq := &datasource.FakeQuerier{}
+	rule.q = fq
+
+	exec := func(v float64) {
+		t.Helper()
+		fq.Reset()
+		fq.Add(datasource.Metric{Values: []float64{v}, Timestamps: []int64{1}})
+		if _, err := rule.exec(context.TODO(), ts, 0); err != nil {
+			t.Fatalf("unexpected error for value %v: %s", v, err)
+		}
+	}
+
+	// NaN and Inf values must not produce any alert.
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		exec(v)
+		if len(rule.alerts) != 0 {
+			t.Fatalf("expected 0 alerts for value %v; got %d", v, len(rule.alerts))
+		}
+	}
+
+	// a finite value must produce an alert.
+	exec(1)
+	if len(rule.alerts) != 1 {
+		t.Fatalf("expected 1 alert for finite value; got %d", len(rule.alerts))
 	}
 }

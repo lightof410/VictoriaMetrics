@@ -116,6 +116,11 @@ func (m *manager) update(ctx context.Context, groupsCfg []config.Group, restore 
 	var rrPresent, arPresent bool
 	groupsRegistry := make(map[uint64]*rule.Group)
 	for _, cfg := range groupsCfg {
+		cfg.Rules = filterRulesByClusterMember(cfg.Rules, *clusterMembersCount, clusterMemberID)
+		if len(cfg.Rules) == 0 {
+			// all rules of the group are sharded to other cluster members
+			continue
+		}
 		for _, r := range cfg.Rules {
 			if rrPresent && arPresent {
 				break
