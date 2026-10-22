@@ -54,6 +54,11 @@ var (
 		"See also -search.maxQueueDuration and -search.maxMemoryPerQuery")
 	maxQueueDuration = flag.Duration("search.maxQueueDuration", 10*time.Second, "The maximum time the request waits for execution when -search.maxConcurrentRequests "+
 		"limit is reached; see also -search.maxQueryDuration")
+	maxQueryExecutions = flag.Int("search.maxQueryExecutions", 10, "The maximum number of times the same query can be executed within -search.queryExecutionsWindow per tenant. "+
+		"Further executions are rejected with HTTP 429 until the window has room. Set to 0 to disable the limit. "+
+		"The limit is applied independently on every vmselect instance")
+	queryExecutionsWindow = flag.Duration("search.queryExecutionsWindow", 10*time.Second, "The time window for -search.maxQueryExecutions. "+
+		"See also -search.maxQueryExecutions")
 	minScrapeInterval = flag.Duration("dedup.minScrapeInterval", 0, "Leave only the last sample in every time series per each discrete interval "+
 		"equal to -dedup.minScrapeInterval > 0. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#deduplication for details")
 	deleteAuthKey                = flagutil.NewPassword("deleteAuthKey", "authKey for metrics' deletion via /prometheus/api/v1/admin/tsdb/delete_series and /graphite/tags/delSeries. It could be passed via authKey query arg. It overrides -httpAuth.*")
@@ -100,6 +105,15 @@ func main() {
 	envflag.Parse()
 	buildinfo.Init()
 	logger.Init()
+
+	if *maxQueryExecutions < 0 {
+		logger.Fatalf("cannot use negative -search.maxQueryExecutions=%d", *maxQueryExecutions)
+	}
+	if *maxQueryExecutions > 0 && *queryExecutionsWindow <= 0 {
+		logger.Fatalf("cannot use non-positive -search.queryExecutionsWindow=%s when -search.maxQueryExecutions=%d",
+			*queryExecutionsWindow, *maxQueryExecutions)
+	}
+	queryRateLimiter = newQueryExecutionRateLimiter(*maxQueryExecutions, *queryExecutionsWindow)
 
 	logger.Infof("starting netstorage at storageNodes %s", *storageNodes)
 	startTime := time.Now()
@@ -367,6 +381,11 @@ func selectHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseW
 	case "prometheus/api/v1/query":
 		queryRequests.Inc()
 		httpserver.EnableCORS(w, r)
+		if err := checkQueryRateLimit(w, at, r); err != nil {
+			queryErrors.Inc()
+			httpserver.SendPrometheusError(w, r, err)
+			return true
+		}
 		if err := prometheus.QueryHandler(qt, startTime, at, w, r); err != nil {
 			queryErrors.Inc()
 			httpserver.SendPrometheusError(w, r, err)
@@ -376,6 +395,11 @@ func selectHandler(qt *querytracer.Tracer, startTime time.Time, w http.ResponseW
 	case "prometheus/api/v1/query_range":
 		queryRangeRequests.Inc()
 		httpserver.EnableCORS(w, r)
+		if err := checkQueryRateLimit(w, at, r); err != nil {
+			queryRangeErrors.Inc()
+			httpserver.SendPrometheusError(w, r, err)
+			return true
+		}
 		if err := prometheus.QueryRangeHandler(qt, startTime, at, w, r); err != nil {
 			queryRangeErrors.Inc()
 			httpserver.SendPrometheusError(w, r, err)
