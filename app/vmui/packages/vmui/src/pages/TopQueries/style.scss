@@ -12,6 +12,19 @@
       height: 14px;
     }
   }
+
+  &__addresses {
+    display: inline-block;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+
+    &-more {
+      color: $color-text-secondary;
+    }
+  }
 }
 
 .vm-top-queries {

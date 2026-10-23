@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -12,6 +13,10 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/stringsutil"
 )
+
+// maxClientAddresses limits the number of distinct client addresses and
+// X-Forwarded-For values returned per query at /api/v1/status/top_queries.
+const maxClientAddresses = 8
 
 var (
 	lastQueriesCount = flag.Int("search.queryStats.lastQueriesCount", 20000, "Query stats for /api/v1/status/top_queries is tracked on this number of last queries. "+
@@ -32,18 +37,22 @@ func Enabled() bool {
 
 // RegisterQuery registers the query on the given timeRangeMsecs, which has been started at startTime.
 //
+// remoteAddr is the client address from the HTTP request, xForwardedFor is the raw X-Forwarded-For header.
+//
 // RegisterQuery must be called when the query is finished.
-func RegisterQuery(accountID, projectID uint32, query string, timeRangeMsecs int64, startTime time.Time, memoryUsage int64) {
+func RegisterQuery(accountID, projectID uint32, query string, timeRangeMsecs int64, startTime time.Time, memoryUsage int64, remoteAddr, xForwardedFor string) {
 	initOnce.Do(initQueryStats)
-	qsTracker.registerQuery(accountID, projectID, query, timeRangeMsecs, startTime, memoryUsage)
+	qsTracker.registerQuery(accountID, projectID, query, timeRangeMsecs, startTime, memoryUsage, remoteAddr, xForwardedFor)
 }
 
 // RegisterQueryMultiTenant registers the query on the given timeRangeMsecs, which has been started at startTime.
 //
+// remoteAddr is the client address from the HTTP request, xForwardedFor is the raw X-Forwarded-For header.
+//
 // RegisterQueryMultiTenant must be called when the query is finished.
-func RegisterQueryMultiTenant(query string, timeRangeMsecs int64, startTime time.Time) {
+func RegisterQueryMultiTenant(query string, timeRangeMsecs int64, startTime time.Time, remoteAddr, xForwardedFor string) {
 	initOnce.Do(initQueryStats)
-	qsTracker.registerQueryMultiTenant(query, timeRangeMsecs, startTime)
+	qsTracker.registerQueryMultiTenant(query, timeRangeMsecs, startTime, remoteAddr, xForwardedFor)
 }
 
 // WriteJSONQueryStats writes query stats to given writer in json format.
@@ -78,6 +87,52 @@ type queryStatRecord struct {
 	duration      time.Duration
 	multiTenant   bool
 	memoryUsage   int64
+	remoteAddr    string
+	xForwardedFor string
+}
+
+// queryStatClients holds the distinct client addresses and X-Forwarded-For
+// values observed for a single query stats entry.
+type queryStatClients struct {
+	remoteAddrs   []string
+	xForwardedFor []string
+	truncated     bool
+}
+
+func (cs *queryStatClients) add(remoteAddr, xForwardedFor string) {
+	if remoteAddr != "" && !containsString(cs.remoteAddrs, remoteAddr) {
+		if len(cs.remoteAddrs) < maxClientAddresses {
+			cs.remoteAddrs = append(cs.remoteAddrs, remoteAddr)
+		} else {
+			cs.truncated = true
+		}
+	}
+	if xForwardedFor != "" && !containsString(cs.xForwardedFor, xForwardedFor) {
+		if len(cs.xForwardedFor) < maxClientAddresses {
+			cs.xForwardedFor = append(cs.xForwardedFor, xForwardedFor)
+		} else {
+			cs.truncated = true
+		}
+	}
+}
+
+func containsString(a []string, s string) bool {
+	for _, v := range a {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeRemoteAddr drops the port from remoteAddr, so queries from the same
+// client are aggregated regardless of the ephemeral port used by its connections.
+func normalizeRemoteAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
 }
 
 type queryStatKey struct {
@@ -114,7 +169,10 @@ func (qst *queryStatsTracker) writeJSONQueryStats(w io.Writer, topN int, apiFilt
 	fmt.Fprintf(w, `"topByCount":[`)
 	topByCount := qst.getTopByCount(topN, apiFilter, maxLifetime)
 	for i, r := range topByCount {
-		fmt.Fprintf(w, `{"accountID":%d,"projectID":%d,"query":%s,"timeRangeSeconds":%d,"count":%d,"multiTenant":%v}`, r.accountID, r.projectID, stringsutil.JSONString(r.query), r.timeRangeSecs, r.count, r.multiTenant)
+		fmt.Fprintf(w, `{"accountID":%d,"projectID":%d,"query":%s,"timeRangeSeconds":%d,"count":%d,"multiTenant":%v`,
+			r.accountID, r.projectID, stringsutil.JSONString(r.query), r.timeRangeSecs, r.count, r.multiTenant)
+		writeClientsJSON(w, r.clients)
+		fmt.Fprintf(w, `}`)
 		if i+1 < len(topByCount) {
 			fmt.Fprintf(w, `,`)
 		}
@@ -122,8 +180,10 @@ func (qst *queryStatsTracker) writeJSONQueryStats(w io.Writer, topN int, apiFilt
 	fmt.Fprintf(w, `],"topByAvgDuration":[`)
 	topByAvgDuration := qst.getTopByAvgDuration(topN, apiFilter, maxLifetime)
 	for i, r := range topByAvgDuration {
-		fmt.Fprintf(w, `{"accountID":%d,"projectID":%d,"query":%s,"timeRangeSeconds":%d,"avgDurationSeconds":%.3f,"count":%d,"multiTenant": %v}`,
+		fmt.Fprintf(w, `{"accountID":%d,"projectID":%d,"query":%s,"timeRangeSeconds":%d,"avgDurationSeconds":%.3f,"count":%d,"multiTenant":%v`,
 			r.accountID, r.projectID, stringsutil.JSONString(r.query), r.timeRangeSecs, r.duration.Seconds(), r.count, r.multiTenant)
+		writeClientsJSON(w, r.clients)
+		fmt.Fprintf(w, `}`)
 		if i+1 < len(topByAvgDuration) {
 			fmt.Fprintf(w, `,`)
 		}
@@ -131,8 +191,10 @@ func (qst *queryStatsTracker) writeJSONQueryStats(w io.Writer, topN int, apiFilt
 	fmt.Fprintf(w, `],"topBySumDuration":[`)
 	topBySumDuration := qst.getTopBySumDuration(topN, apiFilter, maxLifetime)
 	for i, r := range topBySumDuration {
-		fmt.Fprintf(w, `{"accountID":%d,"projectID":%d,"query":%s,"timeRangeSeconds":%d,"sumDurationSeconds":%.3f,"count":%d,"multiTenant":%v}`,
+		fmt.Fprintf(w, `{"accountID":%d,"projectID":%d,"query":%s,"timeRangeSeconds":%d,"sumDurationSeconds":%.3f,"count":%d,"multiTenant":%v`,
 			r.accountID, r.projectID, stringsutil.JSONString(r.query), r.timeRangeSecs, r.duration.Seconds(), r.count, r.multiTenant)
+		writeClientsJSON(w, r.clients)
+		fmt.Fprintf(w, `}`)
 		if i+1 < len(topBySumDuration) {
 			fmt.Fprintf(w, `,`)
 		}
@@ -141,7 +203,10 @@ func (qst *queryStatsTracker) writeJSONQueryStats(w io.Writer, topN int, apiFilt
 	fmt.Fprintf(w, `],"topByAvgMemoryUsage":[`)
 	topByAvgMemoryConsumption := qst.getTopByAvgMemoryUsage(topN, apiFilter, maxLifetime)
 	for i, r := range topByAvgMemoryConsumption {
-		fmt.Fprintf(w, `{"query":%s,"timeRangeSeconds":%d,"avgMemoryBytes":%d,"count":%d}`, stringsutil.JSONString(r.query), r.timeRangeSecs, r.memoryUsage, r.count)
+		fmt.Fprintf(w, `{"query":%s,"timeRangeSeconds":%d,"avgMemoryBytes":%d,"count":%d`,
+			stringsutil.JSONString(r.query), r.timeRangeSecs, r.memoryUsage, r.count)
+		writeClientsJSON(w, r.clients)
+		fmt.Fprintf(w, `}`)
 		if i+1 < len(topByAvgMemoryConsumption) {
 			fmt.Fprintf(w, `,`)
 		}
@@ -150,7 +215,29 @@ func (qst *queryStatsTracker) writeJSONQueryStats(w io.Writer, topN int, apiFilt
 	fmt.Fprintf(w, `]}`)
 }
 
-func (qst *queryStatsTracker) registerQuery(accountID, projectID uint32, query string, timeRangeMsecs int64, startTime time.Time, memoryUsage int64) {
+func writeClientsJSON(w io.Writer, clients *queryStatClients) {
+	fmt.Fprintf(w, `,"remoteAddrs":[`)
+	if clients != nil {
+		for i, addr := range clients.remoteAddrs {
+			if i > 0 {
+				fmt.Fprintf(w, `,`)
+			}
+			fmt.Fprintf(w, `%s`, stringsutil.JSONString(addr))
+		}
+	}
+	fmt.Fprintf(w, `],"xForwardedFor":[`)
+	if clients != nil {
+		for i, xff := range clients.xForwardedFor {
+			if i > 0 {
+				fmt.Fprintf(w, `,`)
+			}
+			fmt.Fprintf(w, `%s`, stringsutil.JSONString(xff))
+		}
+	}
+	fmt.Fprintf(w, `],"clientsTruncated":%v`, clients != nil && clients.truncated)
+}
+
+func (qst *queryStatsTracker) registerQuery(accountID, projectID uint32, query string, timeRangeMsecs int64, startTime time.Time, memoryUsage int64, remoteAddr, xForwardedFor string) {
 	registerTime := time.Now()
 	duration := registerTime.Sub(startTime)
 	if duration < *minQueryDuration {
@@ -177,9 +264,11 @@ func (qst *queryStatsTracker) registerQuery(accountID, projectID uint32, query s
 	r.registerTime = registerTime
 	r.duration = duration
 	r.memoryUsage = memoryUsage
+	r.remoteAddr = normalizeRemoteAddr(remoteAddr)
+	r.xForwardedFor = xForwardedFor
 }
 
-func (qst *queryStatsTracker) registerQueryMultiTenant(query string, timeRangeMsecs int64, startTime time.Time) {
+func (qst *queryStatsTracker) registerQueryMultiTenant(query string, timeRangeMsecs int64, startTime time.Time, remoteAddr, xForwardedFor string) {
 	registerTime := time.Now()
 	duration := registerTime.Sub(startTime)
 	if duration < *minQueryDuration {
@@ -201,6 +290,8 @@ func (qst *queryStatsTracker) registerQueryMultiTenant(query string, timeRangeMs
 	r.timeRangeSecs = timeRangeMsecs / 1000
 	r.registerTime = registerTime
 	r.duration = duration
+	r.remoteAddr = normalizeRemoteAddr(remoteAddr)
+	r.xForwardedFor = xForwardedFor
 }
 
 func (r *queryStatRecord) matches(apFilter *accountProjectFilter, currentTime time.Time, maxLifetime time.Duration) bool {
@@ -244,6 +335,7 @@ func (qst *queryStatsTracker) getTopByCount(topN int, apFilter *accountProjectFi
 			timeRangeSecs: k.timeRangeSecs,
 			count:         count,
 			multiTenant:   k.multiTenant,
+			key:           k,
 		})
 	}
 	sort.Slice(a, func(i, j int) bool {
@@ -251,6 +343,14 @@ func (qst *queryStatsTracker) getTopByCount(topN int, apFilter *accountProjectFi
 	})
 	if len(a) > topN {
 		a = a[:topN]
+	}
+	keys := make([]queryStatKey, 0, len(a))
+	for i := range a {
+		keys = append(keys, a[i].key)
+	}
+	clients := qst.collectClients(keys, apFilter, maxLifetime)
+	for i := range a {
+		a[i].clients = clients[a[i].key]
 	}
 	return a
 }
@@ -262,6 +362,8 @@ type queryStatByCount struct {
 	timeRangeSecs int64
 	count         int
 	multiTenant   bool
+	key           queryStatKey
+	clients       *queryStatClients
 }
 
 func (qst *queryStatsTracker) getTopByAvgDuration(topN int, apFilter *accountProjectFilter, maxLifetime time.Duration) []queryStatByDuration {
@@ -293,6 +395,7 @@ func (qst *queryStatsTracker) getTopByAvgDuration(topN int, apFilter *accountPro
 			duration:      ks.sum / time.Duration(ks.count),
 			count:         ks.count,
 			multiTenant:   k.multiTenant,
+			key:           k,
 		})
 	}
 	sort.Slice(a, func(i, j int) bool {
@@ -300,6 +403,14 @@ func (qst *queryStatsTracker) getTopByAvgDuration(topN int, apFilter *accountPro
 	})
 	if len(a) > topN {
 		a = a[:topN]
+	}
+	keys := make([]queryStatKey, 0, len(a))
+	for i := range a {
+		keys = append(keys, a[i].key)
+	}
+	clients := qst.collectClients(keys, apFilter, maxLifetime)
+	for i := range a {
+		a[i].clients = clients[a[i].key]
 	}
 	return a
 }
@@ -312,6 +423,8 @@ type queryStatByDuration struct {
 	duration      time.Duration
 	count         int
 	multiTenant   bool
+	key           queryStatKey
+	clients       *queryStatClients
 }
 
 func (qst *queryStatsTracker) getTopBySumDuration(topN int, apFilter *accountProjectFilter, maxLifetime time.Duration) []queryStatByDuration {
@@ -343,6 +456,7 @@ func (qst *queryStatsTracker) getTopBySumDuration(topN int, apFilter *accountPro
 			duration:      kd.sum,
 			count:         kd.count,
 			multiTenant:   k.multiTenant,
+			key:           k,
 		})
 	}
 	sort.Slice(a, func(i, j int) bool {
@@ -350,6 +464,14 @@ func (qst *queryStatsTracker) getTopBySumDuration(topN int, apFilter *accountPro
 	})
 	if len(a) > topN {
 		a = a[:topN]
+	}
+	keys := make([]queryStatKey, 0, len(a))
+	for i := range a {
+		keys = append(keys, a[i].key)
+	}
+	clients := qst.collectClients(keys, apFilter, maxLifetime)
+	for i := range a {
+		a[i].clients = clients[a[i].key]
 	}
 	return a
 }
@@ -359,6 +481,8 @@ type queryStatByMemory struct {
 	timeRangeSecs int64
 	memoryUsage   int64
 	count         int
+	key           queryStatKey
+	clients       *queryStatClients
 }
 
 func (qst *queryStatsTracker) getTopByAvgMemoryUsage(topN int, apFilter *accountProjectFilter, maxLifetime time.Duration) []queryStatByMemory {
@@ -387,6 +511,7 @@ func (qst *queryStatsTracker) getTopByAvgMemoryUsage(topN int, apFilter *account
 			timeRangeSecs: k.timeRangeSecs,
 			memoryUsage:   ks.sum / int64(ks.count),
 			count:         ks.count,
+			key:           k,
 		})
 	}
 	sort.Slice(a, func(i, j int) bool {
@@ -395,5 +520,41 @@ func (qst *queryStatsTracker) getTopByAvgMemoryUsage(topN int, apFilter *account
 	if len(a) > topN {
 		a = a[:topN]
 	}
+	keys := make([]queryStatKey, 0, len(a))
+	for i := range a {
+		keys = append(keys, a[i].key)
+	}
+	clients := qst.collectClients(keys, apFilter, maxLifetime)
+	for i := range a {
+		a[i].clients = clients[a[i].key]
+	}
 	return a
+}
+
+// collectClients returns the distinct client addresses tracked for the given query keys.
+func (qst *queryStatsTracker) collectClients(keys []queryStatKey, apFilter *accountProjectFilter, maxLifetime time.Duration) map[queryStatKey]*queryStatClients {
+	wanted := make(map[queryStatKey]struct{}, len(keys))
+	for _, k := range keys {
+		wanted[k] = struct{}{}
+	}
+	clients := make(map[queryStatKey]*queryStatClients, len(keys))
+	currentTime := time.Now()
+	qst.mu.Lock()
+	for _, r := range qst.a {
+		if !r.matches(apFilter, currentTime, maxLifetime) {
+			continue
+		}
+		k := r.key()
+		if _, ok := wanted[k]; !ok {
+			continue
+		}
+		cs := clients[k]
+		if cs == nil {
+			cs = &queryStatClients{}
+			clients[k] = cs
+		}
+		cs.add(r.remoteAddr, r.xForwardedFor)
+	}
+	qst.mu.Unlock()
+	return clients
 }

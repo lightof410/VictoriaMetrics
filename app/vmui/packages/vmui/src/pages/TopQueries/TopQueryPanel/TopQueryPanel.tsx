@@ -14,6 +14,7 @@ export interface TopQueryColumn {
   key: keyof TopQuery;
   sortBy?: keyof TopQuery;
   format?: (row: TopQuery) => ReactNode;
+  sortable?: boolean;
 }
 
 export interface TopQueryPanelProps {

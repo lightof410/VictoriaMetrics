@@ -40,11 +40,11 @@ func Exec(qt *querytracer.Tracer, ec *EvalConfig, q string, isFirstPointOnly boo
 		defer func() {
 			ec.QueryStats.addExecutionTimeMsec(startTime)
 			if ec.IsMultiTenant {
-				querystats.RegisterQueryMultiTenant(q, ec.End-ec.Start, startTime)
+				querystats.RegisterQueryMultiTenant(q, ec.End-ec.Start, startTime, ec.RemoteAddr, ec.XForwardedFor)
 				return
 			}
 			at := ec.AuthTokens[0]
-			querystats.RegisterQuery(at.AccountID, at.ProjectID, q, ec.End-ec.Start, startTime, ec.QueryStats.memoryUsage())
+			querystats.RegisterQuery(at.AccountID, at.ProjectID, q, ec.End-ec.Start, startTime, ec.QueryStats.memoryUsage(), ec.RemoteAddr, ec.XForwardedFor)
 		}()
 	}
 

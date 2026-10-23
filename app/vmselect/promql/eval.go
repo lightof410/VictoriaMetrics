@@ -131,6 +131,12 @@ type EvalConfig struct {
 	// QuotedRemoteAddr contains quoted remote address.
 	QuotedRemoteAddr string
 
+	// RemoteAddr contains the client address from the HTTP request, e.g. "1.2.3.4:5678".
+	RemoteAddr string
+
+	// XForwardedFor contains the raw X-Forwarded-For HTTP request header.
+	XForwardedFor string
+
 	Deadline searchutil.Deadline
 
 	// Whether the response must not be cached.

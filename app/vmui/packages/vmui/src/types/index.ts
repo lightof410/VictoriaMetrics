@@ -95,6 +95,9 @@ export interface TopQuery {
   avgMemoryBytes: number;
   timeRange: string;
   url?: string;
+  remoteAddrs?: string[];
+  xForwardedFor?: string[];
+  clientsTruncated?: boolean;
 }
 
 export interface TopQueryStats {

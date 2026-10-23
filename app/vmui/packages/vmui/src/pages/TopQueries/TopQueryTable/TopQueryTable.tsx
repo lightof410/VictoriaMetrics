@@ -37,11 +37,16 @@ const TopQueryTable:FC<TopQueryPanelProps> = ({ rows, columns, defaultOrderBy })
         <tr className="vm-table__row vm-table__row_header">
           {columns.map((col) => {
             const sortKey = col.sortBy || col.key;
+            const sortable = col.sortable !== false;
 
             return (
               <th
-                className="vm-table-cell vm-table-cell_header vm-table-cell_sort"
-                onClick={createSortHandler(sortKey)}
+                className={classNames({
+                  "vm-table-cell": true,
+                  "vm-table-cell_header": true,
+                  "vm-table-cell_sort": sortable,
+                })}
+                onClick={sortable ? createSortHandler(sortKey) : undefined}
                 key={col.key}
               >
                 <div className="vm-table-cell__content">
@@ -56,15 +61,17 @@ const TopQueryTable:FC<TopQueryPanelProps> = ({ rows, columns, defaultOrderBy })
                       </span>
                     </Tooltip>
                   )}
-                  <div
-                    className={classNames({
-                      "vm-table__sort-icon": true,
-                      "vm-table__sort-icon_active": orderBy === sortKey,
-                      "vm-table__sort-icon_desc": orderDir === "desc" && orderBy === sortKey
-                    })}
-                  >
-                    <ArrowDropDownIcon/>
-                  </div>
+                  {sortable && (
+                    <div
+                      className={classNames({
+                        "vm-table__sort-icon": true,
+                        "vm-table__sort-icon_active": orderBy === sortKey,
+                        "vm-table__sort-icon_desc": orderDir === "desc" && orderBy === sortKey
+                      })}
+                    >
+                      <ArrowDropDownIcon/>
+                    </div>
+                  )}
                 </div>
               </th>
             );
