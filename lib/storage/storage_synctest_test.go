@@ -584,11 +584,10 @@ func TestStorageAddRows_nextDayIndexPrefill(t *testing.T) {
 // can be widened up to 23 hours via OpenOptions.PerDayIndexPrefillWindow.
 //
 // Widening the window must lower the peak prefill probability instead of
-// increasing the total amount of prefill work. For a window of W hours the
-// prefill probability grows linearly from 0 to 1/W, so the total number of
-// pre-filled entries stays roughly the same, while the peak rate of pre-fill
-// index writes drops W times. The downside is the longer backlog: by the end of
-// the day a fraction of (1 - 1/(2W)) series still has no entry for the next day.
+// increasing or decreasing the total amount of prefill work. For a window of W
+// hours the prefill probability grows linearly from 0 to 1, so all the
+// timeseries seen during the window get pre-filled by the end of the day, while
+// the peak rate of pre-fill index writes drops W times.
 func TestStorageAddRows_nextDayIndexPrefillWindow(t *testing.T) {
 	defer testRemoveAll(t)
 
@@ -679,19 +678,35 @@ func TestStorageAddRows_nextDayIndexPrefillWindow(t *testing.T) {
 			}
 		}
 
-		// pMin is 0.125 half an hour into a 2h window: (22.5-22)/(2*2).
+		// pMin is 0.25 half an hour into a 2h window: (22.5-22)/2.
 		time.Sleep(30 * time.Minute) // 2000-01-01T22:30:00Z
-		checkPrefillFraction("metric1", 0.125)
+		checkPrefillFraction("metric1", 0.25)
 
-		// pMin is 0.375 an hour and a half into a 2h window: (23.5-22)/(2*2).
+		// pMin is 0.75 an hour and a half into a 2h window: (23.5-22)/2.
 		time.Sleep(1 * time.Hour) // 2000-01-01T23:30:00Z
-		checkPrefillFraction("metric2", 0.375)
+		checkPrefillFraction("metric2", 0.75)
 
-		// pMin is 0.4375 three quarters into a 2h window: (23.75-22)/(2*2).
-		// The peak probability is 1/(2W)=0.25 at 23:00 and 0.5 right before
-		// midnight, i.e. W times lower than with the default 1h window.
+		// pMin is 0.875 three quarters into a 2h window: (23.75-22)/2.
+		// The prefill probability grows 2 times slower than with the default
+		// 1h window, i.e. the peak rate of pre-fill index writes drops 2 times.
 		time.Sleep(15 * time.Minute) // 2000-01-01T23:45:00Z
-		checkPrefillFraction("metric3", 0.4375)
+		checkPrefillFraction("metric3", 0.875)
+
+		// By the end of the window pMin must reach 1, so all the timeseries seen
+		// during the window get an entry for the next day before the day ends.
+		// Otherwise the remaining timeseries would create their entries via the
+		// slow path right after midnight, which means the pre-fill load would be
+		// moved to a much shorter time slot instead of being spread in time.
+		time.Sleep(14 * time.Minute) // 2000-01-01T23:59:00Z
+		mrs4 := testGenerateMetricRowsWithPrefixForTenantID(rng, accountID, projectID, numSeries, "metric4", TimeRange{
+			MinTimestamp: time.Now().Add(-15 * time.Minute).UnixMilli(),
+			MaxTimestamp: time.Now().UnixMilli(),
+		})
+		s.AddRows(mrs4, defaultPrecisionBits)
+		s.DebugFlush()
+		if got, wantMin := countMetricIDs(t, s, "metric4", nextDay), numSeries*95/100; got < wantMin {
+			t.Fatalf("unexpected metric id count for next day at the end of the prefill window: got %d, want >= %d", got, wantMin)
+		}
 	})
 }
 

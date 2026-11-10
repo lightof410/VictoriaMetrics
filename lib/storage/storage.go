@@ -2457,12 +2457,20 @@ func (s *Storage) updatePerDateData(rows []rawRow, mrs []*MetricRow, hmPrev, hmC
 	//
 	// pMin is the probability of pre-filling the (date+1, metricID) entry once a
 	// sample for the timeseries arrives while the pre-fill window is active. It
-	// grows linearly from 0 to 1/W, so the total number of pre-filled entries
-	// (integral of pMin over the window = 1/2) does not depend on W, while the
-	// peak rate of pre-fill index writes drops W times. W=1 is equivalent to the
-	// historical behavior, when only the last hour of the day was used.
+	// grows linearly from 0 to 1, so every timeseries seen during the window gets
+	// pre-filled exactly once independently of W - this is guaranteed by the
+	// nextDayMetricIDs check below. As a result the total amount of pre-filled
+	// records does not depend on W, while the peak rate of pre-fill index writes
+	// drops W times. W=1 is equivalent to the historical behavior, when only the
+	// last hour of the day was used.
+	//
+	// Note that pMin must reach 1 at the end of the window. Otherwise the
+	// timeseries which were not pre-filled would fall back to the slow path for
+	// creating their (date+1, metricID) entry right after the beginning of the
+	// next day, i.e. the pre-fill load would be moved to a much shorter time
+	// slot instead of being spread in time.
 	w := s.perDayIndexPrefillWindowHours
-	pMin := (float64(ts%(3600*24))/3600 - (24 - w)) / (w * w)
+	pMin := (float64(ts%(3600*24))/3600 - (24 - w)) / w
 	currentHour := ts / 3600
 	firstHourOfDay := isFirstHourOfDay(ts)
 	type pendingDateMetricID struct {
