@@ -158,6 +158,12 @@ type Storage struct {
 	// It helps to spread load in time for index records creation and reduce resource usage.
 	idbPrefillStartSeconds int64
 
+	// perDayIndexPrefillWindowHours is the size of the time window before the
+	// end of a day during which the next day per-day inverted index entries are
+	// pre-populated. It helps to spread the pre-fill load in time and to reduce
+	// the peak rate of index writes. See updatePerDateData().
+	perDayIndexPrefillWindowHours float64
+
 	// logNewSeries is used for logging the new series. We will log new series when logNewSeries is true or logNewSeriesUntil is greater than the current time.
 	logNewSeries atomic.Bool
 
@@ -178,6 +184,10 @@ type accountProjectKey struct {
 	ProjectID uint32
 }
 
+// maxPerDayIndexPrefillWindow is the maximum allowed value for
+// OpenOptions.PerDayIndexPrefillWindow.
+const maxPerDayIndexPrefillWindow = 23 * time.Hour
+
 // OpenOptions optional args for MustOpenStorage
 type OpenOptions struct {
 	Retention                   time.Duration
@@ -189,6 +199,7 @@ type OpenOptions struct {
 	DisablePerDayIndex          bool
 	TrackMetricNamesStats       bool
 	IDBPrefillStart             time.Duration
+	PerDayIndexPrefillWindow    time.Duration
 	LogNewSeries                bool
 }
 
@@ -214,15 +225,23 @@ func MustOpenStorage(path string, opts OpenOptions) *Storage {
 	if idbPrefillStart <= 0 {
 		idbPrefillStart = time.Hour
 	}
+	perDayIndexPrefillWindow := opts.PerDayIndexPrefillWindow
+	if perDayIndexPrefillWindow <= 0 {
+		perDayIndexPrefillWindow = time.Hour
+	}
+	if perDayIndexPrefillWindow > maxPerDayIndexPrefillWindow {
+		logger.Panicf("FATAL: PerDayIndexPrefillWindow cannot exceed %s; got %s", maxPerDayIndexPrefillWindow, perDayIndexPrefillWindow)
+	}
 	s := &Storage{
-		path:                        path,
-		cachePath:                   filepath.Join(path, cacheDirname),
-		retentionMsecs:              retention.Milliseconds(),
-		futureRetentionMsecs:        futureRetention.Milliseconds(),
-		maxBackfillAgeMsecs:         maxBackfillAge.Milliseconds(),
-		denyQueriesOutsideRetention: opts.DenyQueriesOutsideRetention,
-		stopCh:                      make(chan struct{}),
-		idbPrefillStartSeconds:      idbPrefillStart.Milliseconds() / 1000,
+		path:                          path,
+		cachePath:                     filepath.Join(path, cacheDirname),
+		retentionMsecs:                retention.Milliseconds(),
+		futureRetentionMsecs:          futureRetention.Milliseconds(),
+		maxBackfillAgeMsecs:           maxBackfillAge.Milliseconds(),
+		denyQueriesOutsideRetention:   opts.DenyQueriesOutsideRetention,
+		stopCh:                        make(chan struct{}),
+		idbPrefillStartSeconds:        idbPrefillStart.Milliseconds() / 1000,
+		perDayIndexPrefillWindowHours: perDayIndexPrefillWindow.Hours(),
 	}
 	s.logNewSeries.Store(opts.LogNewSeries)
 
@@ -2433,9 +2452,17 @@ func (s *Storage) updatePerDateData(rows []rawRow, mrs []*MetricRow, hmPrev, hmC
 	nextDayDate := nextDayMetricIDsCache.date + 1
 	nextDayMetricIDs := &nextDayMetricIDsCache.metricIDs
 	ts := fasttime.UnixTimestamp()
-	// Start pre-populating the next per-day inverted index during the last hour of the current day.
-	// pMin linearly increases from 0 to 1 during the last hour of the day.
-	pMin := (float64(ts%(3600*24)) / 3600) - 23
+	// Start pre-populating the next per-day inverted index during the last W hours
+	// of the current day, where W is s.perDayIndexPrefillWindowHours.
+	//
+	// pMin is the probability of pre-filling the (date+1, metricID) entry once a
+	// sample for the timeseries arrives while the pre-fill window is active. It
+	// grows linearly from 0 to 1/W, so the total number of pre-filled entries
+	// (integral of pMin over the window = 1/2) does not depend on W, while the
+	// peak rate of pre-fill index writes drops W times. W=1 is equivalent to the
+	// historical behavior, when only the last hour of the day was used.
+	w := s.perDayIndexPrefillWindowHours
+	pMin := (float64(ts%(3600*24))/3600 - (24 - w)) / (w * w)
 	currentHour := ts / 3600
 	firstHourOfDay := isFirstHourOfDay(ts)
 	type pendingDateMetricID struct {

@@ -579,6 +579,122 @@ func TestStorageAddRows_nextDayIndexPrefill(t *testing.T) {
 	})
 }
 
+// TestStorageAddRows_nextDayIndexPrefillWindow tests the configurable per-day
+// index prefill window. The window defaults to the last hour of the day, but it
+// can be widened up to 23 hours via OpenOptions.PerDayIndexPrefillWindow.
+//
+// Widening the window must lower the peak prefill probability instead of
+// increasing the total amount of prefill work. For a window of W hours the
+// prefill probability grows linearly from 0 to 1/W, so the total number of
+// pre-filled entries stays roughly the same, while the peak rate of pre-fill
+// index writes drops W times. The downside is the longer backlog: by the end of
+// the day a fraction of (1 - 1/(2W)) series still has no entry for the next day.
+func TestStorageAddRows_nextDayIndexPrefillWindow(t *testing.T) {
+	defer testRemoveAll(t)
+
+	const (
+		accountID = 12
+		projectID = 34
+	)
+
+	countMetricIDs := func(t *testing.T, s *Storage, prefix string, tr TimeRange) int {
+		t.Helper()
+
+		tfs := NewTagFilters(accountID, projectID)
+		if err := tfs.Add(nil, []byte(prefix+".*"), false, true); err != nil {
+			t.Fatalf("unexpected error in TagFilters.Add: %v", err)
+		}
+		ids := testSearchMetricIDs(s, []*TagFilters{tfs}, tr, 1e9, noDeadline)
+		return len(ids)
+	}
+
+	synctest.Test(t, func(t *testing.T) {
+		// synctest starts at 2000-01-01T00:00:00Z.
+
+		today := TimeRange{
+			MinTimestamp: time.Now().UnixMilli(),
+			MaxTimestamp: time.Now().UnixMilli() + msecPerDay - 1,
+		}
+		nextDay := TimeRange{
+			MinTimestamp: today.MinTimestamp + msecPerDay,
+			MaxTimestamp: today.MaxTimestamp + msecPerDay,
+		}
+
+		const numSeries = 1000
+		rng := rand.New(rand.NewSource(1))
+
+		// The prefill window is [22:00, 24:00) for a 2h window.
+		time.Sleep(21*time.Hour + 59*time.Minute) // 2000-01-01T21:59:00Z
+		s := MustOpenStorage(t.Name(), OpenOptions{
+			PerDayIndexPrefillWindow: 2 * time.Hour,
+		})
+		defer s.MustClose()
+
+		mrs0 := testGenerateMetricRowsWithPrefixForTenantID(rng, accountID, projectID, numSeries, "metric0", TimeRange{
+			MinTimestamp: time.Now().Add(-15 * time.Minute).UnixMilli(),
+			MaxTimestamp: time.Now().UnixMilli(),
+		})
+		s.AddRows(mrs0, defaultPrecisionBits)
+		s.DebugFlush()
+		if got, want := countMetricIDs(t, s, "metric0", today), numSeries; got != want {
+			t.Fatalf("unexpected metric id count for today: got %d, want %d", got, want)
+		}
+		if got, want := countMetricIDs(t, s, "metric0", nextDay), 0; got != want {
+			t.Fatalf("unexpected metric id count for next day before the prefill window: got %d, want %d", got, want)
+		}
+
+		// At exactly 22:00:00 the prefill probability is still zero.
+		time.Sleep(1 * time.Minute) // 2000-01-01T22:00:00Z
+		synctest.Wait()
+		s.AddRows(mrs0, defaultPrecisionBits)
+		s.DebugFlush()
+		if got, want := countMetricIDs(t, s, "metric0", nextDay), 0; got != want {
+			t.Fatalf("unexpected metric id count for next day at the beginning of the prefill window: got %d, want %d", got, want)
+		}
+
+		// Checks that the fraction of series pre-filled for the next day is close
+		// to the prefill probability for the given point in time.
+		checkPrefillFraction := func(prefix string, wantMin float64) {
+			t.Helper()
+
+			mrs := testGenerateMetricRowsWithPrefixForTenantID(rng, accountID, projectID, numSeries, prefix, TimeRange{
+				MinTimestamp: time.Now().Add(-15 * time.Minute).UnixMilli(),
+				MaxTimestamp: time.Now().UnixMilli(),
+			})
+			s.AddRows(mrs, defaultPrecisionBits)
+			s.DebugFlush()
+
+			if got, want := countMetricIDs(t, s, prefix, today), numSeries; got != want {
+				t.Fatalf("unexpected metric id count for today: got %d, want %d", got, want)
+			}
+			got := countMetricIDs(t, s, prefix, nextDay)
+			// The hash based selection is deterministic, so the count is expected
+			// to be close to wantMin*numSeries. Use a wide band to avoid flakiness.
+			want := int(wantMin * numSeries)
+			if got < want-numSeries/12 || got > want+numSeries/12 {
+				t.Fatalf("unexpected metric id count for next day at %s: got %d, want %d +/- %d", prefix, got, want, numSeries/12)
+			}
+			if got >= numSeries {
+				t.Fatalf("unexpected metric id count for next day: got %d, want < %d", got, numSeries)
+			}
+		}
+
+		// pMin is 0.125 half an hour into a 2h window: (22.5-22)/(2*2).
+		time.Sleep(30 * time.Minute) // 2000-01-01T22:30:00Z
+		checkPrefillFraction("metric1", 0.125)
+
+		// pMin is 0.375 an hour and a half into a 2h window: (23.5-22)/(2*2).
+		time.Sleep(1 * time.Hour) // 2000-01-01T23:30:00Z
+		checkPrefillFraction("metric2", 0.375)
+
+		// pMin is 0.4375 three quarters into a 2h window: (23.75-22)/(2*2).
+		// The peak probability is 1/(2W)=0.25 at 23:00 and 0.5 right before
+		// midnight, i.e. W times lower than with the default 1h window.
+		time.Sleep(15 * time.Minute) // 2000-01-01T23:45:00Z
+		checkPrefillFraction("metric3", 0.4375)
+	})
+}
+
 func assertPendingNextDayMetricIDsEmpty(t *testing.T, s *Storage) {
 	t.Helper()
 	got := s.pendingNextDayMetricIDs.Len()

@@ -127,6 +127,10 @@ var (
 		"Starting the pre-fill process earlier can help reduce resource usage spikes during rotation. "+
 		"In most cases, this value should not be changed. The maximum allowed value is 23h.")
 
+	perDayIndexPrefillWindow = flag.Duration("storage.perDayIndexPrefillWindow", time.Hour, "Specifies the time window before the end of a day, during which VictoriaMetrics pre-populates the next day per-day inverted index records. "+
+		"A wider window spreads the pre-fill load over a longer period of time, which reduces the peak rate of index writes, but keeps the total amount of pre-filled records the same. "+
+		"In most cases, this value should not be changed. The maximum allowed value is 23h.")
+
 	logNewSeriesAuthKey = flagutil.NewPassword("logNewSeriesAuthKey", "authKey, which must be passed in query string to /internal/log_new_series. It overrides -httpAuth.*")
 
 	metadataStorageSize = flagutil.NewBytes("storage.maxMetadataStorageSize", 0, "Overrides max size for metrics metadata entries in-memory storage. "+
@@ -178,6 +182,9 @@ func main() {
 	if *idbPrefillStart > 23*time.Hour {
 		logger.Panicf("-storage.idbPrefillStart cannot exceed 23 hours; got %s", idbPrefillStart)
 	}
+	if *perDayIndexPrefillWindow > 23*time.Hour {
+		logger.Panicf("-storage.perDayIndexPrefillWindow cannot exceed 23 hours; got %s", perDayIndexPrefillWindow)
+	}
 	fs.RegisterPathFsMetrics(*storageDataPath)
 	logger.Infof("opening storage at %q with -retentionPeriod=%s", *storageDataPath, retentionPeriod)
 	startTime := time.Now()
@@ -191,6 +198,7 @@ func main() {
 		DisablePerDayIndex:          *disablePerDayIndex,
 		TrackMetricNamesStats:       *trackMetricNamesStats,
 		IDBPrefillStart:             *idbPrefillStart,
+		PerDayIndexPrefillWindow:    *perDayIndexPrefillWindow,
 		LogNewSeries:                *logNewSeries,
 	}
 	strg := storage.MustOpenStorage(*storageDataPath, opts)

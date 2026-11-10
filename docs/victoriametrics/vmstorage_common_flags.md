@@ -241,6 +241,8 @@ See the docs at https://docs.victoriametrics.com/victoriametrics/cluster-victori
   -storage.minFreeDiskSpaceBytes size
      The minimum free disk space at -storageDataPath after which the storage stops accepting new data
      Supports the following optional suffixes for size values: KB, MB, GB, TB, KiB, MiB, GiB, TiB (default 100000000)
+  -storage.perDayIndexPrefillWindow duration
+     Specifies the time window before the end of a day, during which VictoriaMetrics pre-populates the next day per-day inverted index records. A wider window spreads the pre-fill load over a longer period of time, which reduces the peak rate of index writes, but keeps the total amount of pre-filled records the same. In most cases, this value should not be changed. The maximum allowed value is 23h. (default 1h0m0s)
   -storage.trackMetricNamesStats
      Whether to track ingest and query requests for timeseries metric names. This feature allows to track metric names unused at query requests. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#track-ingested-metrics-usage (default true)
   -storage.vminsertConnsShutdownDuration duration
